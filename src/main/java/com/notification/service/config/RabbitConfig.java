@@ -1,5 +1,8 @@
 package com.notification.service.config;
 
+import com.notification.service.messaging.DeadLetterRecoverer;
+import com.notification.service.notification.NotificationNotFoundException;
+import com.notification.service.notification.NotificationService;
 import java.util.List;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
@@ -30,7 +33,8 @@ public class RabbitConfig {
 
 	// Failures that will never succeed on a retry: the message itself is broken.
 	private static final List<Class<? extends Throwable>> PERMANENT_FAILURES = List.of(
-			MessageConversionException.class, MailParseException.class, MailPreparationException.class);
+			MessageConversionException.class, MailParseException.class, MailPreparationException.class,
+			NotificationNotFoundException.class);
 
 	@Bean
 	DirectExchange notificationsExchange() {
@@ -72,11 +76,14 @@ public class RabbitConfig {
 		return new JacksonJsonMessageConverter();
 	}
 
-	// After the last retry, the message is republished to the DLQ with the failure reason in its headers
-	// (x-exception-message, x-exception-stacktrace), so it can be inspected and replayed later.
+	// After the last retry, the notification is marked FAILED and the message is republished to the DLQ with the
+	// failure reason in its headers (x-exception-message, x-exception-stacktrace), so it can be inspected later.
 	@Bean
-	MessageRecoverer deadLetterRecoverer(RabbitTemplate rabbitTemplate) {
-		return new RepublishMessageRecoverer(rabbitTemplate, DEAD_LETTER_EXCHANGE, EMAIL_ROUTING_KEY);
+	MessageRecoverer deadLetterRecoverer(RabbitTemplate rabbitTemplate, MessageConverter messageConverter,
+			NotificationService notificationService) {
+		return new DeadLetterRecoverer(
+				new RepublishMessageRecoverer(rabbitTemplate, DEAD_LETTER_EXCHANGE, EMAIL_ROUTING_KEY),
+				messageConverter, notificationService);
 	}
 
 	@Bean
