@@ -4,10 +4,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-import com.notification.service.messaging.NotificationMessage;
-import com.notification.service.messaging.NotificationPublisher;
+import com.notification.service.notification.Notification;
+import com.notification.service.notification.NotificationNotFoundException;
+import com.notification.service.notification.NotificationService;
+import com.notification.service.notification.QueueUnavailableException;
+import java.time.Instant;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.AmqpConnectException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.http.MediaType;
@@ -21,15 +27,20 @@ class NotificationControllerTest {
 	MockMvcTester mvc;
 
 	@MockitoBean
-	NotificationPublisher publisher;
+	NotificationService notificationService;
 
 	@Test
 	void validRequestIsQueued() {
+		Notification notification = new Notification("client@example.com", "Hi", "Hello", Instant.now());
+		when(notificationService.create(any())).thenReturn(notification);
+
 		assertThat(post("""
 				{"to":"client@example.com","subject":"Hi","body":"Hello"}
-				""")).hasStatus(202).bodyJson().extractingPath("$.id").isNotNull();
-
-		verify(publisher).publish(any(NotificationMessage.class));
+				""")).hasStatus(202)
+			.bodyJson()
+			.hasPathSatisfying("$.id", id -> id.assertThat().isEqualTo(notification.getId().toString()))
+			.extractingPath("$.status")
+			.isEqualTo("QUEUED");
 	}
 
 	@Test
@@ -38,7 +49,7 @@ class NotificationControllerTest {
 				{"to":"not-an-email","subject":"Hi","body":"Hello"}
 				""")).hasStatus(400);
 
-		verify(publisher, never()).publish(any());
+		verify(notificationService, never()).create(any());
 	}
 
 	@Test
@@ -47,7 +58,37 @@ class NotificationControllerTest {
 				{"to":"client@example.com","subject":"","body":" "}
 				""")).hasStatus(400);
 
-		verify(publisher, never()).publish(any());
+		verify(notificationService, never()).create(any());
+	}
+
+	@Test
+	void brokerDownReturnsServiceUnavailable() {
+		when(notificationService.create(any()))
+			.thenThrow(new QueueUnavailableException(new AmqpConnectException(new RuntimeException("down"))));
+
+		assertThat(post("""
+				{"to":"client@example.com","subject":"Hi","body":"Hello"}
+				""")).hasStatus(503);
+	}
+
+	@Test
+	void notificationStatusCanBeQueried() {
+		Notification notification = new Notification("client@example.com", "Hi", "Hello", Instant.now());
+		notification.markSent(Instant.now());
+		when(notificationService.find(notification.getId())).thenReturn(notification);
+
+		assertThat(mvc.get().uri("/notifications/{id}", notification.getId())).hasStatus(200)
+			.bodyJson()
+			.extractingPath("$.status")
+			.isEqualTo("SENT");
+	}
+
+	@Test
+	void unknownNotificationReturnsNotFound() {
+		UUID id = UUID.randomUUID();
+		when(notificationService.find(id)).thenThrow(new NotificationNotFoundException(id));
+
+		assertThat(mvc.get().uri("/notifications/{id}", id)).hasStatus(404);
 	}
 
 	private MockMvcTester.MockMvcRequestBuilder post(String json) {

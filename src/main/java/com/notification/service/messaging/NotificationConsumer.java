@@ -1,7 +1,7 @@
 package com.notification.service.messaging;
 
 import com.notification.service.config.RabbitConfig;
-import com.notification.service.email.EmailSender;
+import com.notification.service.notification.NotificationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -12,18 +12,17 @@ public class NotificationConsumer {
 
 	private static final Logger log = LoggerFactory.getLogger(NotificationConsumer.class);
 
-	private final EmailSender emailSender;
+	private final NotificationService notificationService;
 
-	public NotificationConsumer(EmailSender emailSender) {
-		this.emailSender = emailSender;
+	public NotificationConsumer(NotificationService notificationService) {
+		this.notificationService = notificationService;
 	}
 
 	// Spring acks the message only if this method returns normally; an exception means no ack.
 	@RabbitListener(queues = RabbitConfig.EMAIL_QUEUE)
 	public void onMessage(NotificationMessage message) {
 		log.info("Notification {} received", message.id());
-		emailSender.send(message);
-		log.info("Notification {} sent to {}", message.id(), message.to());
+		notificationService.deliver(message.id());
 	}
 
 }
