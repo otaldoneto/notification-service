@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # Testcontainers starts real PostgreSQL, RabbitMQ and Mailpit containers on the runner's Docker.
+      - name: Run tests
+        run: ./mvnw -B test
+
+      - name: Coverage summary
+        if: success()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import csv
+          lm = lc = bm = bc = 0
+          with open('target/site/jacoco/jacoco.csv') as f:
+              for r in csv.DictReader(f):
+                  lm += int(r['LINE_MISSED']); lc += int(r['LINE_COVERED'])
+                  bm += int(r['BRANCH_MISSED']); bc += int(r['BRANCH_COVERED'])
+          print("### Test coverage")
+          print(f"- Lines: {100 * lc / (lc + lm):.1f}% ({lc} of {lc + lm})")
+          print(f"- Branches: {100 * bc / (bc + bm):.1f}% ({bc} of {bc + bm})")
+          PY
+
+      - name: Upload coverage to Codecov
+        if: success()
+        uses: codecov/codecov-action@v7
+        with:
+          files: target/site/jacoco/jacoco.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Pull requests from forks and Dependabot cannot read secrets; that must not fail the build
+          fail_ci_if_error: false
+
+      - name: Upload the coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: target/site/jacoco
+          if-no-files-found: ignore
+
+  docker-smoke-test:
+    name: Docker smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build and start the stack
+        run: docker compose up -d --build
+
+      - name: Send a notification and wait until it is delivered
+        run: ./scripts/smoke-test.sh
+
+      - name: Show the logs when something fails
+        if: failure()
+        run: docker compose logs
